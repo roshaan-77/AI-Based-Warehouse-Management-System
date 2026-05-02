@@ -1,0 +1,7 @@
+project
+*.log
+system_log.txt
+*_log.txt
+*.Identifier
+admins.txt
+users.txt
