@@ -11,7 +11,7 @@ void *retailer_function(void *arg) {
 
     set_user_running(pthread_self(), 1);
 
-    while (1) {
+    while (!warehouse->shutdown_requested && warehouse->simulation_running) {
         int my_priority = 0;
 
         pthread_mutex_lock(&users_mutex);
@@ -26,16 +26,43 @@ void *retailer_function(void *arg) {
         sleep(calculate_sleep_time(my_priority) + warehouse->retailer_delay);
 
         if (should_operate(my_priority)) {
-            warehouse->retailer_waiting++;
-            sem_wait(&warehouse->full);
-            warehouse->retailer_waiting--;
+            if (sem_trywait(&warehouse->full) == -1) {
+                pthread_mutex_lock(&warehouse->mutex);
+                warehouse->retailer_waiting++;
+                warehouse->retailer_block_cycles++;
+                snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+                         "Retailer %s is waiting because buffer is empty", retailer_name);
+                pthread_mutex_unlock(&warehouse->mutex);
+
+                sem_wait(&warehouse->full);
+
+                pthread_mutex_lock(&warehouse->mutex);
+                if (warehouse->retailer_waiting > 0) warehouse->retailer_waiting--;
+                pthread_mutex_unlock(&warehouse->mutex);
+            } else {
+                pthread_mutex_lock(&warehouse->mutex);
+                warehouse->retailer_block_cycles = 0;
+                pthread_mutex_unlock(&warehouse->mutex);
+            }
 
             pthread_mutex_lock(&warehouse->mutex);
+
+            if (!warehouse->simulation_running || warehouse->buffer_count <= 0) {
+                pthread_mutex_unlock(&warehouse->mutex);
+                break;
+            }
 
             consumed_item = warehouse->buffer[warehouse->out];
             warehouse->out = (warehouse->out + 1) % BUFFER_SIZE;
             warehouse->buffer_count--;
             warehouse->consumed_count++;
+            warehouse->total_operations++;
+            snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+                     "Retailer %s consumed item %d, buffer %d/%d",
+                     retailer_name, consumed_item.id,
+                     warehouse->buffer_count, BUFFER_SIZE);
+            int reached_limit = (warehouse->operation_limit > 0 &&
+                                 warehouse->total_operations >= warehouse->operation_limit);
 
             pthread_mutex_unlock(&warehouse->mutex);
             sem_post(&warehouse->empty);
@@ -47,6 +74,10 @@ void *retailer_function(void *arg) {
             log_item.priority = my_priority;
 
             log_action(SYSTEM_LOG, "Retailed", log_item);
+
+            if (reached_limit) {
+                request_simulation_stop();
+            }
         }
     }
 

@@ -10,7 +10,7 @@ void *supplier_function(void *arg) {
 
     set_user_running(pthread_self(), 1);
 
-    while (1) {
+    while (!warehouse->shutdown_requested && warehouse->simulation_running) {
         int my_priority = 0;
 
         pthread_mutex_lock(&users_mutex);
@@ -31,21 +31,51 @@ void *supplier_function(void *arg) {
             item.quantity = rand() % 10 + 1;
             item.priority = my_priority;
 
-            warehouse->supplier_waiting++;
-            sem_wait(&warehouse->empty);
-            warehouse->supplier_waiting--;
+            if (sem_trywait(&warehouse->empty) == -1) {
+                pthread_mutex_lock(&warehouse->mutex);
+                warehouse->supplier_waiting++;
+                warehouse->supplier_block_cycles++;
+                snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+                         "Supplier %s is waiting because buffer is full", supplier_name);
+                pthread_mutex_unlock(&warehouse->mutex);
+
+                sem_wait(&warehouse->empty);
+
+                pthread_mutex_lock(&warehouse->mutex);
+                if (warehouse->supplier_waiting > 0) warehouse->supplier_waiting--;
+                pthread_mutex_unlock(&warehouse->mutex);
+            } else {
+                pthread_mutex_lock(&warehouse->mutex);
+                warehouse->supplier_block_cycles = 0;
+                pthread_mutex_unlock(&warehouse->mutex);
+            }
 
             pthread_mutex_lock(&warehouse->mutex);
+
+            if (!warehouse->simulation_running || warehouse->buffer_count >= BUFFER_SIZE) {
+                pthread_mutex_unlock(&warehouse->mutex);
+                break;
+            }
 
             warehouse->buffer[warehouse->in] = item;
             warehouse->in = (warehouse->in + 1) % BUFFER_SIZE;
             warehouse->buffer_count++;
             warehouse->produced_count++;
+            warehouse->total_operations++;
+            snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+                     "Supplier %s produced item %d, buffer %d/%d",
+                     supplier_name, item.id, warehouse->buffer_count, BUFFER_SIZE);
+            int reached_limit = (warehouse->operation_limit > 0 &&
+                                 warehouse->total_operations >= warehouse->operation_limit);
 
             pthread_mutex_unlock(&warehouse->mutex);
             sem_post(&warehouse->full);
 
             log_action(SYSTEM_LOG, "Supplied", item);
+
+            if (reached_limit) {
+                request_simulation_stop();
+            }
         }
     }
 
