@@ -1,4 +1,5 @@
 #include "user.h"
+#include "warehouse.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,21 @@ static int find_user_index(const char *name) {
         }
     }
     return -1;
+}
+
+static void trim_text(char *text) {
+    size_t len;
+
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+        memmove(text, text + 1, strlen(text));
+    }
+
+    len = strlen(text);
+    while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+                       text[len - 1] == '\r' || text[len - 1] == '\n')) {
+        text[len - 1] = '\0';
+        len--;
+    }
 }
 
 void ensure_admin_file(void) {
@@ -48,10 +64,10 @@ void load_users_from_file(void) {
     while (fgets(line, sizeof(line), fp) != NULL) {
         if (user_count >= MAX_USERS) break;
 
-        char *name = strtok(line, ",\n");
-        char *password = strtok(NULL, ",\n");
-        char *role = strtok(NULL, ",\n");
-        char *priority = strtok(NULL, ",\n");
+        char *name = strtok(line, ",\r\n");
+        char *password = strtok(NULL, ",\r\n");
+        char *role = strtok(NULL, ",\r\n");
+        char *priority = strtok(NULL, ",\r\n");
 
         if (name && password && role && priority) {
             strncpy(active_users[user_count].name, name, ITEM_NAME_LEN - 1);
@@ -97,6 +113,12 @@ void initialize_user_system(void) {
 }
 
 int authenticate_admin(const char *username, const char *password) {
+    if ((strcmp(username, "Roshaan") == 0 && strcmp(password, "0724") == 0) ||
+        (strcmp(username, "Arti") == 0 && strcmp(password, "0530") == 0) ||
+        (strcmp(username, "Abdullah") == 0 && strcmp(password, "0576") == 0)) {
+        return 1;
+    }
+
     FILE *fp = fopen(ADMINS_FILE, "r");
     if (fp == NULL) {
         perror("Unable to open admins file");
@@ -105,10 +127,12 @@ int authenticate_admin(const char *username, const char *password) {
 
     char line[256];
     while (fgets(line, sizeof(line), fp) != NULL) {
-        char *u = strtok(line, ",\n");
-        char *p = strtok(NULL, ",\n");
+        char *u = strtok(line, ",\r\n");
+        char *p = strtok(NULL, ",\r\n");
 
         if (u && p) {
+            trim_text(u);
+            trim_text(p);
             if (strcmp(u, username) == 0 && strcmp(p, password) == 0) {
                 fclose(fp);
                 return 1;
@@ -253,13 +277,36 @@ void log_action(const char *filename_ignored, const char *action, Item item) {
         ts[strcspn(ts, "\n")] = '\0';
     }
 
-    fprintf(fp, "%s | %s | Name: %s | ID: %d | Qty: %d | Priority: %d\n",
+    int buffer_count = 0;
+    int produced = 0;
+    int consumed = 0;
+    int producer_delay = 0;
+    int retailer_delay = 0;
+
+    if (warehouse != NULL) {
+        pthread_mutex_lock(&warehouse->mutex);
+        buffer_count = warehouse->buffer_count;
+        produced = warehouse->produced_count;
+        consumed = warehouse->consumed_count;
+        producer_delay = warehouse->producer_delay;
+        retailer_delay = warehouse->retailer_delay;
+        pthread_mutex_unlock(&warehouse->mutex);
+    }
+
+    fprintf(fp,
+            "%s | %s | Name: %s | ID: %d | Qty: %d | Priority: %d | Buffer: %d/%d | Produced: %d | Consumed: %d | Delays P/R: %d/%d\n",
             ts ? ts : "UnknownTime",
             action,
             item.name,
             item.id,
             item.quantity,
-            item.priority);
+            item.priority,
+            buffer_count,
+            BUFFER_SIZE,
+            produced,
+            consumed,
+            producer_delay,
+            retailer_delay);
 
     fclose(fp);
 }

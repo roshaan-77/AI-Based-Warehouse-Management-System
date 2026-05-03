@@ -35,9 +35,15 @@ void initialize_warehouse() {
     warehouse->buffer_count = 0;
     warehouse->produced_count = 0;
     warehouse->consumed_count = 0;
+    warehouse->total_operations = 0;
+    warehouse->operation_limit = 0;
+    warehouse->simulation_running = 1;
+    warehouse->shutdown_requested = 0;
 
     warehouse->supplier_waiting = 0;
     warehouse->retailer_waiting = 0;
+    warehouse->supplier_block_cycles = 0;
+    warehouse->retailer_block_cycles = 0;
 
     warehouse->producer_delay = 2;
     warehouse->retailer_delay = 2;
@@ -46,6 +52,12 @@ void initialize_warehouse() {
     warehouse->last_ai_state = -1;
     warehouse->last_ai_action = -1;
     warehouse->last_ai_reward = 0;
+    warehouse->last_ai_q_value = 0.0f;
+    warehouse->last_ai_best_q = 0.0f;
+    snprintf(warehouse->last_ai_reason, sizeof(warehouse->last_ai_reason),
+             "AI is waiting for warehouse activity");
+    snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+             "Warehouse initialized");
 
     memset(warehouse->q_table, 0, sizeof(warehouse->q_table));
 
@@ -108,8 +120,64 @@ void start_retailer_thread(char *retailer_name) {
     printf("[Retailer] Started thread for retailer: %s\n", retailer_name);
 }
 
+void request_simulation_stop(void) {
+    if (warehouse == NULL) return;
+
+    pthread_mutex_lock(&warehouse->mutex);
+    warehouse->simulation_running = 0;
+    snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+             "Simulation stop requested");
+    pthread_mutex_unlock(&warehouse->mutex);
+
+    for (int i = 0; i < BUFFER_SIZE + 8; i++) {
+        sem_post(&warehouse->empty);
+        sem_post(&warehouse->full);
+    }
+}
+
+void reset_warehouse_runtime(void) {
+    if (warehouse == NULL) return;
+
+    pthread_mutex_lock(&warehouse->mutex);
+    warehouse->in = 0;
+    warehouse->out = 0;
+    warehouse->buffer_count = 0;
+    warehouse->produced_count = 0;
+    warehouse->consumed_count = 0;
+    warehouse->total_operations = 0;
+    warehouse->supplier_waiting = 0;
+    warehouse->retailer_waiting = 0;
+    warehouse->supplier_block_cycles = 0;
+    warehouse->retailer_block_cycles = 0;
+    warehouse->producer_delay = 2;
+    warehouse->retailer_delay = 2;
+    warehouse->starvation_flag = 0;
+    warehouse->last_ai_state = -1;
+    warehouse->last_ai_action = -1;
+    warehouse->last_ai_reward = 0;
+    warehouse->last_ai_q_value = 0.0f;
+    warehouse->last_ai_best_q = 0.0f;
+    warehouse->simulation_running = 1;
+    warehouse->shutdown_requested = 0;
+    memset(warehouse->q_table, 0, sizeof(warehouse->q_table));
+    snprintf(warehouse->last_ai_reason, sizeof(warehouse->last_ai_reason),
+             "AI reset and ready");
+    snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+             "Warehouse runtime reset");
+    pthread_mutex_unlock(&warehouse->mutex);
+
+    sem_destroy(&warehouse->full);
+    sem_destroy(&warehouse->empty);
+    sem_init(&warehouse->full, 1, 0);
+    sem_init(&warehouse->empty, 1, BUFFER_SIZE);
+}
+
 void cleanup_warehouse() {
     if (warehouse != NULL) {
+        pthread_mutex_lock(&warehouse->mutex);
+        warehouse->shutdown_requested = 1;
+        pthread_mutex_unlock(&warehouse->mutex);
+        request_simulation_stop();
         munmap(warehouse, sizeof(Warehouse));
         shm_unlink(SHM_NAME);
     }
