@@ -1,7 +1,11 @@
 project
+*.o
 *.log
 system_log.txt
 *_log.txt
 *.Identifier
 admins.txt
 users.txt
+dashboard
+warehouse_system
+OS_Project/
