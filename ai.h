@@ -25,5 +25,7 @@ int choose_action(int state);
 int compute_reward(int state, int action);
 void apply_action(int action);
 void update_q_table(int state, int action, int reward, int next_state);
+const char *ai_state_name(int state);
+const char *ai_action_name(int action);
 
 #endif

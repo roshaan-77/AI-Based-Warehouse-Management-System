@@ -8,6 +8,27 @@ static float alpha = 0.2f;
 static float gamma = 0.8f;
 static float epsilon = 0.2f;
 
+const char *ai_state_name(int state) {
+    switch (state) {
+        case STATE_LOW_NO_STARVATION: return "LOW BUFFER";
+        case STATE_LOW_STARVATION: return "LOW BUFFER + RETAILER STARVATION";
+        case STATE_BALANCED_NO_STARVATION: return "BALANCED";
+        case STATE_BALANCED_STARVATION: return "BALANCED + WAITING THREADS";
+        case STATE_HIGH_NO_STARVATION: return "HIGH BUFFER";
+        case STATE_HIGH_STARVATION: return "HIGH BUFFER + SUPPLIER STARVATION";
+        default: return "OBSERVING";
+    }
+}
+
+const char *ai_action_name(int action) {
+    switch (action) {
+        case ACTION_BOOST_SUPPLIERS: return "BOOST SUPPLIERS";
+        case ACTION_BOOST_RETAILERS: return "BOOST RETAILERS";
+        case ACTION_BALANCE: return "BALANCE BOTH SIDES";
+        default: return "NO ACTION";
+    }
+}
+
 int get_ai_state(void) {
     int count = warehouse->buffer_count;
     int level;
@@ -19,8 +40,12 @@ int get_ai_state(void) {
     else
         level = 1;   // balanced
 
-    if ((level == 0 && warehouse->retailer_waiting > 0) ||
-        (level == 2 && warehouse->supplier_waiting > 0)) {
+    if ((level == 0 && (warehouse->retailer_waiting > 0 ||
+                        warehouse->retailer_block_cycles >= 2)) ||
+        (level == 2 && (warehouse->supplier_waiting > 0 ||
+                        warehouse->supplier_block_cycles >= 2)) ||
+        (level == 1 && (warehouse->supplier_block_cycles >= 4 ||
+                        warehouse->retailer_block_cycles >= 4))) {
         warehouse->starvation_flag = 1;
     } else {
         warehouse->starvation_flag = 0;
@@ -86,17 +111,23 @@ void apply_action(int action) {
         case ACTION_BOOST_SUPPLIERS:
             warehouse->producer_delay = 1;
             warehouse->retailer_delay = 3;
+            snprintf(warehouse->last_ai_reason, sizeof(warehouse->last_ai_reason),
+                     "Buffer is low or retailers are waiting, so suppliers get shorter delays");
             break;
 
         case ACTION_BOOST_RETAILERS:
             warehouse->producer_delay = 3;
             warehouse->retailer_delay = 1;
+            snprintf(warehouse->last_ai_reason, sizeof(warehouse->last_ai_reason),
+                     "Buffer is high or suppliers are waiting, so retailers get shorter delays");
             break;
 
         case ACTION_BALANCE:
         default:
             warehouse->producer_delay = 2;
             warehouse->retailer_delay = 2;
+            snprintf(warehouse->last_ai_reason, sizeof(warehouse->last_ai_reason),
+                     "Warehouse is stable, so both sides receive equal delay");
             break;
     }
 }
@@ -116,21 +147,28 @@ void update_q_table(int state, int action, int reward, int next_state) {
 }
 
 void *ai_scheduler_thread(void *arg) {
+    (void)arg;
     srand(time(NULL) + getpid());
 
-    while (1) {
-        sleep(5);
+    while (!warehouse->shutdown_requested) {
+        sleep(2);
+
+        if (!warehouse->simulation_running) {
+            continue;
+        }
 
         pthread_mutex_lock(&warehouse->mutex);
 
         int state = get_ai_state();
         int action = choose_action(state);
         int reward = compute_reward(state, action);
+        float old_q_value = warehouse->q_table[state][action];
 
         apply_action(action);
 
         int next_state = get_ai_state();
         update_q_table(state, action, reward, next_state);
+        float updated_q_value = warehouse->q_table[state][action];
 
         int old_state = warehouse->last_ai_state;
         int old_action = warehouse->last_ai_action;
@@ -139,9 +177,14 @@ void *ai_scheduler_thread(void *arg) {
             FILE *fp = fopen("ai_log.txt", "a");
             if (fp != NULL) {
                 fprintf(fp,
-                        "[AI] State=%d Action=%d Reward=%d | Buffer=%d | P_Delay=%d R_Delay=%d\n",
-                        state, action, reward,
+                        "[AI] State=%s | Action=%s | Reward=%d | Q %.2f -> %.2f | Buffer=%d/%d | P_Delay=%d R_Delay=%d\n",
+                        ai_state_name(state),
+                        ai_action_name(action),
+                        reward,
+                        old_q_value,
+                        updated_q_value,
                         warehouse->buffer_count,
+                        BUFFER_SIZE,
                         warehouse->producer_delay,
                         warehouse->retailer_delay);
                 fclose(fp);
@@ -151,6 +194,8 @@ void *ai_scheduler_thread(void *arg) {
         warehouse->last_ai_state = state;
         warehouse->last_ai_action = action;
         warehouse->last_ai_reward = reward;
+        warehouse->last_ai_q_value = updated_q_value;
+        warehouse->last_ai_best_q = old_q_value;
 
         pthread_mutex_unlock(&warehouse->mutex);
     }
