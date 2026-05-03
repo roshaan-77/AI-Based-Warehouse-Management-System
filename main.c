@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <pthread.h>
+#include <string.h>
 
 #include "admin.h"
 #include "retailer.h"
@@ -15,8 +16,52 @@
 #include "warehouse.h"
 #include "user.h"
 #include "ai.h"
+#include "ui.h"
 
 pthread_t ai_thread;
+
+static void create_demo_user_if_needed(const char *name, int is_supplier) {
+    if (!is_name_exists(name)) {
+        add_user_to_list(name, "demo123", is_supplier, (pthread_t)0);
+    }
+}
+
+static void run_demo_mode(int supplier_count, int retailer_count, int operation_limit) {
+    if (supplier_count < 1) supplier_count = 1;
+    if (retailer_count < 1) retailer_count = 1;
+    if (supplier_count > 10) supplier_count = 10;
+    if (retailer_count > 10) retailer_count = 10;
+
+    pthread_mutex_lock(&warehouse->mutex);
+    warehouse->operation_limit = operation_limit;
+    warehouse->simulation_running = 1;
+    warehouse->shutdown_requested = 0;
+    snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+             "Demo mode started with %d suppliers and %d retailers",
+             supplier_count, retailer_count);
+    pthread_mutex_unlock(&warehouse->mutex);
+
+    for (int i = 1; i <= supplier_count; i++) {
+        char name[ITEM_NAME_LEN];
+        snprintf(name, sizeof(name), "Supplier%d", i);
+        create_demo_user_if_needed(name, 1);
+        start_supplier_thread(name);
+    }
+
+    for (int i = 1; i <= retailer_count; i++) {
+        char name[ITEM_NAME_LEN];
+        snprintf(name, sizeof(name), "Retailer%d", i);
+        create_demo_user_if_needed(name, 0);
+        start_retailer_thread(name);
+    }
+
+    printf("Demo engine is running. Open another Ubuntu terminal and run: ./dashboard\n");
+    printf("Press Ctrl+C here when your demonstration is finished.\n");
+
+    while (1) {
+        sleep(1);
+    }
+}
 
 void handle_sigint(int sig) {
     printf("\n[!] Caught signal %d, cleaning up...\n", sig);
@@ -24,12 +69,33 @@ void handle_sigint(int sig) {
     exit(0);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     signal(SIGINT, handle_sigint);
     srand(time(NULL));
 
     initialize_warehouse();
     initialize_user_system();
+    pthread_create(&ai_thread, NULL, ai_scheduler_thread, NULL);
+    pthread_detach(ai_thread);
+
+    if (argc >= 2 && strcmp(argv[1], "--demo") == 0) {
+        int supplier_count = argc >= 3 ? atoi(argv[2]) : 2;
+        int retailer_count = argc >= 4 ? atoi(argv[3]) : 2;
+        int operation_limit = argc >= 5 ? atoi(argv[4]) : 60;
+        run_demo_mode(supplier_count, retailer_count, operation_limit);
+    }
+
+    if (argc < 2 || strcmp(argv[1], "--ui") == 0) {
+        run_ncurses_interface();
+        cleanup_warehouse();
+        return 0;
+    }
+
+    if (strcmp(argv[1], "--legacy") != 0) {
+        printf("Unknown option. Use ./warehouse_system, ./warehouse_system --legacy, or ./warehouse_system --demo.\n");
+        cleanup_warehouse();
+        return 1;
+    }
 
     loadingBar();
     system("clear");

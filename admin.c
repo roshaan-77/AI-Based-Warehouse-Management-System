@@ -102,6 +102,25 @@ static void list_registered_users(void) {
     my_getch();
 }
 
+static void configure_operation_limit(void) {
+    int limit;
+
+    printf("Enter total operation limit (0 for unlimited): ");
+    scanf("%d", &limit);
+    if (limit < 0) limit = 0;
+
+    pthread_mutex_lock(&warehouse->mutex);
+    warehouse->operation_limit = limit;
+    warehouse->simulation_running = 1;
+    warehouse->shutdown_requested = 0;
+    snprintf(warehouse->last_event, sizeof(warehouse->last_event),
+             "Operation limit set to %d", limit);
+    pthread_mutex_unlock(&warehouse->mutex);
+
+    printf("Operation limit updated to %d.\n", limit);
+    sleep(2);
+}
+
 void admin_panel(void) {
     if (!admin_login()) return;
 
@@ -115,7 +134,10 @@ void admin_panel(void) {
         printf("4. Start Retailer Thread\n");
         printf("5. View System Log\n");
         printf("6. View Registered Users\n");
-        printf("7. Exit\n");
+        printf("7. Set Demo Operation Limit\n");
+        printf("8. Stop Simulation\n");
+        printf("9. Reset Runtime Counters\n");
+        printf("10. Exit\n");
         printf("Enter choice: ");
         scanf("%d", &choice);
 
@@ -172,6 +194,22 @@ void admin_panel(void) {
                 break;
 
             case 7:
+                configure_operation_limit();
+                break;
+
+            case 8:
+                request_simulation_stop();
+                printf("Simulation stopped.\n");
+                sleep(2);
+                break;
+
+            case 9:
+                reset_warehouse_runtime();
+                printf("Runtime counters reset.\n");
+                sleep(2);
+                break;
+
+            case 10:
                 return;
 
             default:
